@@ -3,6 +3,11 @@ import path from "path";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
 import { createServer as createViteServer } from "vite";
+import {
+  generateSmartReflection,
+  generateSmartSummary,
+  generateSmartPromptIdeas,
+} from "./src/lib/offlineReflection";
 
 dotenv.config();
 
@@ -18,10 +23,17 @@ let aiClient: GoogleGenAI | null = null;
 function getGenAI(): GoogleGenAI {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    throw new Error("GEMINI_API_KEY environment variable is missing. Please set it in your environment or Secret Manager.");
+    throw new Error("GEMINI_API_KEY environment variable is missing.");
   }
   if (!aiClient) {
-    aiClient = new GoogleGenAI({ apiKey });
+    aiClient = new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          "User-Agent": "aistudio-build",
+        },
+      },
+    });
   }
   return aiClient;
 }
@@ -40,31 +52,49 @@ interface FallbackOptions {
   temperature?: number;
 }
 
-async function generateContentWithFallback(options: FallbackOptions): Promise<{ text: string; modelUsed: string }> {
-  const ai = getGenAI();
+async function generateContentWithFallback(options: FallbackOptions): Promise<{ text: string; modelUsed: string; quotaExhausted?: boolean }> {
   let lastError: any = null;
+  let isQuotaExhausted = false;
 
-  for (const modelName of MODEL_FALLBACK_LADDER) {
-    try {
-      const response = await ai.models.generateContent({
-        model: modelName,
-        contents: options.contents,
-        config: {
-          systemInstruction: options.systemInstruction,
-          temperature: options.temperature ?? 0.7,
-        },
-      });
+  try {
+    const ai = getGenAI();
 
-      const responseText = response.text || "";
-      return { text: responseText, modelUsed: modelName };
-    } catch (err: any) {
-      console.warn(`[Gemini Fallback] Model ${modelName} encountered an error:`, err?.message || err);
-      lastError = err;
-      // Continue to next model in fallback ladder
+    for (const modelName of MODEL_FALLBACK_LADDER) {
+      try {
+        const response = await ai.models.generateContent({
+          model: modelName,
+          contents: options.contents,
+          config: {
+            systemInstruction: options.systemInstruction,
+            temperature: options.temperature ?? 0.7,
+          },
+        });
+
+        const responseText = response.text || "";
+        return { text: responseText, modelUsed: modelName };
+      } catch (err: any) {
+        const errMsg = err?.message || String(err);
+        console.warn(`[Gemini Fallback] Model ${modelName} encountered an error:`, errMsg);
+        lastError = err;
+
+        if (
+          errMsg.includes("RESOURCE_EXHAUSTED") ||
+          errMsg.includes("prepayment credits are depleted") ||
+          errMsg.includes("429")
+        ) {
+          isQuotaExhausted = true;
+        }
+      }
     }
+  } catch (initErr: any) {
+    console.warn("[Gemini Init Warning]:", initErr?.message || initErr);
+    lastError = initErr;
   }
 
-  throw new Error(`All Gemini models failed. Last error: ${lastError?.message || "Unknown error"}`);
+  const errDetail = lastError?.message || "All Gemini models failed or key unconfigured.";
+  const errorToThrow = new Error(errDetail);
+  (errorToThrow as any).quotaExhausted = isQuotaExhausted;
+  throw errorToThrow;
 }
 
 // API Health Check
@@ -78,20 +108,19 @@ app.get("/api/health", (_req: Request, res: Response) => {
 
 // Multi-turn Reflection & Chat Endpoint
 app.post("/api/gemini/chat", async (req: Request, res: Response) => {
+  const payload = (req.body && typeof req.body === "object") ? req.body : {};
+  const {
+    messages = [],
+    mode = "reflection",
+    userContext = "",
+    customPrompt = "",
+  } = payload;
+
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return res.status(400).json({ error: "Invalid payload: 'messages' array must not be empty." });
+  }
+
   try {
-    // Defensive Payload Ingestion (Null-Safe Destructuring)
-    const payload = (req.body && typeof req.body === "object") ? req.body : {};
-    const {
-      messages = [],
-      mode = "reflection",
-      userContext = "",
-      customPrompt = "",
-    } = payload;
-
-    if (!Array.isArray(messages) || messages.length === 0) {
-      return res.status(400).json({ error: "Invalid payload: 'messages' array must not be empty." });
-    }
-
     // Determine system instruction based on mode
     let systemInstruction = `You are a compassionate, thoughtful, and insightful AI Reflection Companion named ReflectAI. 
 Your purpose is to help the user unpack their thoughts, gain clarity, explore ideas deeply, and discover meaningful perspectives.
@@ -136,27 +165,39 @@ Use rich markdown formatting where appropriate (bullet points, bold highlights, 
       timestamp: new Date().toISOString(),
     });
   } catch (error: any) {
-    console.error("[API /api/gemini/chat Error]:", error);
-    return res.status(500).json({
-      error: error.message || "Failed to generate reflection response.",
+    console.warn("[API /api/gemini/chat] Gemini API unavailable, engaging intelligent reflection engine:", error?.message);
+    
+    // Graceful fallback to rich structured cognitive reflection so user can continue journaling smoothly
+    const fallbackResponse = generateSmartReflection({
+      messages,
+      mode,
+      userContext,
+    });
+
+    return res.json({
+      reply: fallbackResponse.text,
+      modelUsed: fallbackResponse.modelUsed,
+      isFallback: true,
+      notice: "Live reflection generated via built-in cognitive companion.",
+      timestamp: new Date().toISOString(),
     });
   }
 });
 
 // Entry Summarization & Insights Generator Endpoint
 app.post("/api/gemini/summarize", async (req: Request, res: Response) => {
+  const payload = (req.body && typeof req.body === "object") ? req.body : {};
+  const { title = "", content = "", messages = [] } = payload;
+
+  const transcript = messages.length > 0
+    ? messages.map((m: any) => `${m.role === "model" ? "ReflectAI" : "User"}: ${m.content}`).join("\n\n")
+    : content;
+
+  if (!transcript.trim()) {
+    return res.status(400).json({ error: "Content or message transcript is required for summarization." });
+  }
+
   try {
-    const payload = (req.body && typeof req.body === "object") ? req.body : {};
-    const { title = "", content = "", messages = [] } = payload;
-
-    const transcript = messages.length > 0
-      ? messages.map((m: any) => `${m.role === "model" ? "ReflectAI" : "User"}: ${m.content}`).join("\n\n")
-      : content;
-
-    if (!transcript.trim()) {
-      return res.status(400).json({ error: "Content or message transcript is required for summarization." });
-    }
-
     const systemInstruction = `You are an expert cognitive synthesizer and journaling analyst. 
 Analyze the provided journal entry or reflection conversation and return a structured summary.
 You MUST output valid JSON with the exact following schema:
@@ -184,14 +225,7 @@ Do NOT output any markdown backticks or extra text outside the JSON object.`;
       const cleanJson = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
       parsed = JSON.parse(cleanJson);
     } catch {
-      parsed = {
-        suggestedTitle: title || "Reflective Journal Session",
-        summary: text.slice(0, 300),
-        keyInsights: ["Gained clarity through introspection"],
-        actionItems: [],
-        sentimentTag: "Reflective",
-        tags: ["journal", "reflection"],
-      };
+      parsed = generateSmartSummary({ title, content, messages });
     }
 
     return res.json({
@@ -200,19 +234,22 @@ Do NOT output any markdown backticks or extra text outside the JSON object.`;
       timestamp: new Date().toISOString(),
     });
   } catch (error: any) {
-    console.error("[API /api/gemini/summarize Error]:", error);
-    return res.status(500).json({
-      error: error.message || "Failed to generate entry summary.",
+    console.warn("[API /api/gemini/summarize] Gemini API unavailable, generating smart cognitive summary:", error?.message);
+    const smartSummary = generateSmartSummary({ title, content, messages });
+    return res.json({
+      ...smartSummary,
+      isFallback: true,
+      timestamp: new Date().toISOString(),
     });
   }
 });
 
 // Prompt Inspiration Endpoint
 app.post("/api/gemini/prompt-ideas", async (req: Request, res: Response) => {
-  try {
-    const payload = (req.body && typeof req.body === "object") ? req.body : {};
-    const { category = "general" } = payload;
+  const payload = (req.body && typeof req.body === "object") ? req.body : {};
+  const { category = "general" } = payload;
 
+  try {
     const systemInstruction = `You are a creative journal prompt curator. Provide 4 thoughtful, evocative reflection prompts suitable for category: ${category}.
 Output strictly valid JSON with the format:
 {
@@ -232,22 +269,14 @@ Output strictly valid JSON with the format:
       const cleanJson = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
       result = JSON.parse(cleanJson);
     } catch {
-      result = {
-        prompts: [
-          { title: "Today's Core Priority", prompt: "What is the single most meaningful focus for your energy today, and why?", category },
-          { title: "Unspoken Tension", prompt: "What is an underlying tension or feeling you haven't fully acknowledged yet?", category },
-          { title: "Celebration of Progress", prompt: "What is a small victory or moment of growth from the past 48 hours?", category },
-          { title: "Tomorrow's Perspective", prompt: "Looking back on today from 5 years in the future, what advice would you give yourself right now?", category },
-        ]
-      };
+      result = { prompts: generateSmartPromptIdeas(category) as any };
     }
 
     return res.json(result);
   } catch (error: any) {
-    console.error("[API /api/gemini/prompt-ideas Error]:", error);
-    return res.status(500).json({
-      error: error.message || "Failed to generate prompt ideas.",
-    });
+    console.warn("[API /api/gemini/prompt-ideas] Gemini API unavailable, serving built-in prompt catalog:", error?.message);
+    const prompts = generateSmartPromptIdeas(category);
+    return res.json({ prompts, isFallback: true });
   }
 });
 
