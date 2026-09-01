@@ -1,0 +1,12 @@
+{
+  "projectId": "personal-agent-on-cloud",
+  "appId": "1:1018255973187:web:abfa3420c922db1035edf6",
+  "apiKey": "AIzaSyCQDnlxC59MHe0QSGHAbP2ky_R4fOs3gcs",
+  "authDomain": "personal-agent-on-cloud.firebaseapp.com",
+  "firestoreDatabaseId": "ai-studio-ddbbb96f-39a8-4c1b-ad57-16f82d1aeb3d",
+  "storageBucket": "personal-agent-on-cloud.firebasestorage.app",
+  "messagingSenderId": "1018255973187",
+  "measurementId": "",
+  "oAuthClientId": "1018255973187-chmibdjci15jtgr41sd3ujvg28jbmv8m.apps.googleusercontent.com",
+  "recaptchaSiteKey": ""
+}

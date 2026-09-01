@@ -1,0 +1,115 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile data stored under users collection",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "User unique identifier matching auth UID"
+        },
+        "email": {
+          "type": "string",
+          "description": "User email address"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "User display name"
+        },
+        "photoURL": {
+          "type": "string",
+          "description": "Profile avatar image URL"
+        },
+        "createdAt": {
+          "type": "number",
+          "description": "Creation epoch timestamp"
+        }
+      },
+      "required": ["uid"]
+    },
+    "JournalEntry": {
+      "title": "JournalEntry",
+      "description": "Individual cognitive reflection and journal document",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Entry document identifier"
+        },
+        "userId": {
+          "type": "string",
+          "description": "Owner user UID"
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 300,
+          "description": "Title of the reflection entry"
+        },
+        "category": {
+          "type": "string",
+          "enum": ["reflection", "brainstorm", "coaching", "action_plan", "gratitude", "freeform"],
+          "description": "Reflection topic category"
+        },
+        "initialPrompt": {
+          "type": "string",
+          "maxLength": 2000,
+          "description": "Initial inspiration or guided prompt"
+        },
+        "messages": {
+          "type": "array",
+          "description": "Conversation message turn history between user and Gemini model"
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 5000,
+          "description": "AI generated executive summary"
+        },
+        "keyInsights": {
+          "type": "array",
+          "description": "Extracted key takeaways"
+        },
+        "actionItems": {
+          "type": "array",
+          "description": "Actionable task items"
+        },
+        "sentimentTag": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Emotional sentiment tone tag"
+        },
+        "tags": {
+          "type": "array",
+          "description": "User and AI categorization tags"
+        },
+        "isFavorite": {
+          "type": "boolean",
+          "description": "Starred favorite status"
+        },
+        "wordCount": {
+          "type": "number",
+          "description": "Total word count in messages and content"
+        },
+        "createdAt": {
+          "type": "number",
+          "description": "Creation timestamp in epoch milliseconds"
+        },
+        "updatedAt": {
+          "type": "number",
+          "description": "Last modified timestamp in epoch milliseconds"
+        }
+      },
+      "required": ["id", "userId", "title", "category", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profile documents"
+    },
+    "/users/{userId}/entries/{entryId}": {
+      "schema": "JournalEntry",
+      "description": "Isolated journal and reflection entries owned by userId"
+    }
+  }
+}
